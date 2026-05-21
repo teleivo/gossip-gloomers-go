@@ -2,15 +2,14 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 var (
-	messages []float64
-	topology map[string]any
+	messages []int
+	topology map[string][]string
 )
 
 // https://fly.io/dist-sys/3a/
@@ -18,27 +17,19 @@ func main() {
 	n := maelstrom.NewNode()
 
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
-		var body map[string]any
+		var body struct {
+			Message int `json:"message"`
+		}
 		err := json.Unmarshal(msg.Body, &body)
 		if err != nil {
 			return err
 		}
 
-		data := body["message"]
-		if data == nil {
-			return fmt.Errorf("empty message field")
-		}
-		msgData, ok := data.(float64)
-		if !ok {
-			return fmt.Errorf("message should be an integer: %v", data)
-		}
-
-		messages = append(messages, msgData)
-		body = map[string]any{
+		messages = append(messages, body.Message)
+		reply := map[string]any{
 			"type": "broadcast_ok",
 		}
-
-		return n.Reply(msg, body)
+		return n.Reply(msg, reply)
 	})
 
 	n.Handle("read", func(msg maelstrom.Message) error {
@@ -50,16 +41,15 @@ func main() {
 	})
 
 	n.Handle("topology", func(msg maelstrom.Message) error {
-		var body map[string]any
+		var body struct {
+			Topology map[string][]string `json:"topology"`
+		}
 		err := json.Unmarshal(msg.Body, &body)
 		if err != nil {
 			return err
 		}
-		var ok bool
-		topology, ok = body["topology"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("malformed topology message body: %v", body["topology"])
-		}
+
+		topology = body.Topology
 
 		reply := map[string]any{
 			"type": "topology_ok",
