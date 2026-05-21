@@ -10,7 +10,7 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-// https://fly.io/dist-sys/2/
+// https://fly.io/dist-sys/2/ Challenge #2: Unique ID Generation
 // we receive
 // {
 //   "type": "generate"
@@ -20,17 +20,19 @@ import (
 //   "type": "generate_ok",
 //   "id": 123
 // }
-// snowflake ids: 64-bit: 0 + 41-bit timestamp ms since some epoch + 10-bit worker ID + 12-bit sequence number
-// epoch: 1st Jan 1970
-// epoch: 1st Jan 2015
-// 2^41 ms: 69 years
 //
-// current millis - base epoch: 18th May 2026
+// Solved using: https://en.wikipedia.org/wiki/Snowflake_ID
+// 64-bit: 0 | 41-bit timestamp ms since some epoch | 10-bit worker ID | 12-bit sequence number
 //
-// marshal into string to avoid JS double precision issue "1234"
+// We chose our RC batch start date as our epoch: 18th May 2026
+// Timstamp of 2^41 ms: ~69 years
+//
 // 12-bit sequence number is to avoid duplicate ids generated on the same node in the same millisecond. So a node can generate 4069 ids per millisecond
+//
+// Challenge allows id to be of any type. We marshal IDs into string to avoid JS double precision issue "1234"
 
-var epochBase = time.Date(2026, 05, 18, 0, 0, 0, 0, time.UTC)
+// RC batch start date
+var epochBase = time.Date(2026, 0o5, 18, 0, 0, 0, 0, time.UTC)
 
 func main() {
 	n := maelstrom.NewNode()
@@ -52,15 +54,6 @@ func main() {
 	var counter uint16
 	var mu sync.Mutex
 	n.Handle("generate", func(msg maelstrom.Message) error {
-		// 64-bit
-		// 0|41-bit|10-bit|12-bit
-		// 10-bit fit into 64-bit
-		// 12-bit fit into 64-bit
-		// imagine 3 64-bit integers that we bit | together
-		// timestamp: 0|41-bit timestamp|000
-		// node id: 0|000|10-bit node id|000
-		// counter: 0|000|000|12-bit counter
-
 		timestamp := now()
 		var curCounter uint16
 		mu.Lock()
@@ -95,13 +88,15 @@ func now() int64 {
 	return time.Since(epochBase).Milliseconds()
 }
 
+// format returns a snowflake formatted ID.
+// 0|41-bit|10-bit|12-bit
 func format(timestamp, nodeID int64, counter uint16) int64 {
 	nodeID &= 1023
 	nodeID = nodeID << 12
-	var byteCounter = int64(counter)
+
+	byteCounter := int64(counter)
 	byteCounter &= int64(4095)
 
-	// millis now: 1779293150272
 	timestamp &= (1 << 41) - 1
 	timestamp <<= 22
 	return timestamp | nodeID | byteCounter
