@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"slices"
 	"sync"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -20,6 +21,47 @@ var (
 // https://fly.io/dist-sys/3c/
 func main() {
 	n := maelstrom.NewNode()
+
+	go func() {
+		d := time.NewTicker(500 * time.Millisecond)
+		for range d.C {
+			var body map[string]any
+			mu.RLock()
+			body = map[string]any{
+				"type":     "timed_broadcast",
+				"messages": slices.Collect(maps.Keys(messages)),
+			}
+			mu.RUnlock()
+
+			for i := 0; i < 3; {
+				randomNode := n.NodeIDs()[rand.Intn(len(n.NodeIDs()))]
+				if randomNode == n.ID() {
+					continue
+				}
+				n.Send(randomNode, body)
+				i++
+			}
+		}
+	}()
+
+	n.Handle("timed_broadcast", func(msg maelstrom.Message) error {
+		var body struct {
+			Message []int `json:"messages"`
+		}
+		err := json.Unmarshal(msg.Body, &body)
+		if err != nil {
+			return err
+		}
+
+		mu.Lock()
+		for _, v := range body.Message {
+			messages[v] = struct{}{}
+		}
+		mu.Unlock()
+
+		return nil
+	})
+
 	// 2. gossip
 	// pick uniformily random node of nodeIDs and broadcast to them
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
