@@ -20,6 +20,7 @@ runs the Maelstrom test with the parameters from the challenge.
 | [#3e: Efficient Broadcast, Part II](https://fly.io/dist-sys/3e/) | [maelstrom-broadcast-3d-tree](maelstrom-broadcast-3d-tree) |
 | [#4: Grow-Only Counter](https://fly.io/dist-sys/4/) | [maelstrom-counter](maelstrom-counter) |
 | [#5a: Single-Node Kafka-Style Log](https://fly.io/dist-sys/5a/) | [maelstrom-kafka-5a](maelstrom-kafka-5a) |
+| [#5b: Multi-Node Kafka-Style Log](https://fly.io/dist-sys/5b/) | [maelstrom-kafka-5b](maelstrom-kafka-5b) |
 
 ## Resources
 
