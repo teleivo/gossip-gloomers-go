@@ -14,8 +14,8 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-// Challenge #5b: Multi-Node Kafka-Style Log
-// https://fly.io/dist-sys/5b/
+// Challenge #5c: Efficient Kafka-Style Log
+// https://fly.io/dist-sys/5c/
 
 // Idea for solution:
 // "send": store a per log offset under the log name in the kv store. Use CAS with retry
@@ -23,6 +23,43 @@ import (
 // log name + "-" + offset.
 // "poll": read log messages using above log key pattern given users offset. Relying on the fact
 // that offsets are contiguous read up to 4 and stop on first that does not exist.
+
+// Test setup: 2 nodes, --concurrency 2n (4 threads total, 2 per node), --rate 1000, --time-limit 20.
+// Rate 1000 means ~1000 ops/sec total across all threads with random jitter (gen/stagger).
+// Each client thread is sequential: one request at a time, wait for response, then next.
+// So at most 4 in-flight requests simultaneously. At this rate collisions on the same key
+// are frequent. CAS failures are unavoidable under cross-node contention but same-node
+// races can be reduced by tracking offsets locally instead of reading from lin-kv each time.
+// msgs-per-op counts all messages (client<->node + node<->lin-kv); reducing CAS retries
+// and lin-kv reads is the main lever for bringing it down.
+//
+// Starting point: 5b stats
+// ./metrics.sh
+// === results ===
+// availability:   0.9996232
+// msgs/op (all):  13.047209
+// msgs/op (srv):  10.852882
+// worst lag (s):  30.642763997
+// send ok:        true
+//
+// === CAS operations (op=send) ===
+// total:  13005
+// ok:     8905
+// failed: 4100
+// ratio:  31.5%
+
+// why is the key lag 30+s if the test only takes 20s to run?
+//
+// TODO is my realtime key lag going up linearly with the amount of keys? and does this mean keys as
+// in the log key? and what is the lag by thread?
+//
+// think: can I get away with storing the logs in the seq-kv? and only offsets in lin-kv. offsets
+// need be be contiguous/monotonic at least for my poll. issue with using lin-kv is that a client
+// polling a node that lags behind forever would not see the logs unless that node talks to the
+// other node instead of the kv directly.
+// other idea: could each node be assigned an offset offset to reduce cas failure due to multiple
+// leaders competing for the same offset. So like a shard inside the log? but how to then merge this
+// into an overall monotonic append only log?
 
 func main() {
 	n := maelstrom.NewNode()

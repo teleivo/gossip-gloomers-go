@@ -37,6 +37,7 @@ maelstrom-broadcast-3d-tree/maelstrom-broadcast
 maelstrom-counter/maelstrom-counter
 maelstrom-kafka-5a/maelstrom-kafka
 maelstrom-kafka-5b/maelstrom-kafka
+maelstrom-kafka-5c/maelstrom-kafka
 
 # debugging/testing
 _research/

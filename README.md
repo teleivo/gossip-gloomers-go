@@ -21,6 +21,7 @@ runs the Maelstrom test with the parameters from the challenge.
 | [#4: Grow-Only Counter](https://fly.io/dist-sys/4/) | [maelstrom-counter](maelstrom-counter) |
 | [#5a: Single-Node Kafka-Style Log](https://fly.io/dist-sys/5a/) | [maelstrom-kafka-5a](maelstrom-kafka-5a) |
 | [#5b: Multi-Node Kafka-Style Log](https://fly.io/dist-sys/5b/) | [maelstrom-kafka-5b](maelstrom-kafka-5b) |
+| [#5c: Efficient Kafka-Style Log](https://fly.io/dist-sys/5c/) (wip) | [maelstrom-kafka-5c](maelstrom-kafka-5c) |
 
 ## Resources
 
