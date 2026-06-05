@@ -25,31 +25,41 @@ import (
 
 // TODO towards 5c
 // current 5b stats
-// :availability {:valid? true, :ok-fraction 0.99967605},
-// :net {:all {:send-count 259310,
-//             :recv-count 259310,
-//             :msg-count 259310,
-//             :msgs-per-op 13.999352},
-//       :clients {:send-count 41028,
-//                 :recv-count 41028,
-//                 :msg-count 41028},
-//       :servers {:send-count 218282,
-//                 :recv-count 218282,
-//                 :msg-count 218282,
-//                 :msgs-per-op 11.784376},
-//       :valid? true},
-// :workload {:valid? true,
-//            :worst-realtime-lag {:time 30.745009388,
-//                                 :process 11,
-//                                 :key "9",
-//                                 :lag 30.66373773},
-//            :bad-error-types (),
-//            :error-types (),
-//            :info-txn-causes ()},
-// :valid? true}
-// get CAS failure count/rate
+// ./metrics.sh
+// === results ===
+// availability:   0.999573
+// msgs/op (all):  13.805498
+// msgs/op (srv):  11.592741
+// worst lag (s):  30.630575327
+// send ok:        true
+//
+// === CAS operations (op=send) ===
+// total:  13183
+// ok:     8824
+// failed: 4359
+// ratio:  33.0%
+//
+// updating local offsets on poll reduced failed cas a bit
+//
+// ./metrics.sh
+// === results ===
+// availability:   0.9995635
+// msgs/op (all):  13.761144
+// msgs/op (srv):  11.569644
+// worst lag (s):  30.760134432
+// send ok:        true
+//
+// === CAS operations (op=send) ===
+// total:  12593
+// ok:     8681
+// failed: 3912
+// ratio:  31.0%
+//
+// why is the key lag 30+s if the test only takes 20s to run?
+//
 // TODO is my realtime key lag going up linearly with the amount of keys? and does this mean keys as
 // in the log key? and what is the lag by thread?
+//
 // think: can I get away with storing the logs in the seq-kv? and only offsets in lin-kv. offsets
 // need be be contiguous/monotonic at least for my poll. issue with using lin-kv is that a client
 // polling a node that lags behind forever would not see the logs unless that node talks to the
@@ -90,7 +100,7 @@ func main() {
 		// TODO rethink this: purpose is to not have to read offset at the start and reduce cas
 		// failures. Can I shrink the critical section?
 		offset = logsOffset[body.Key]
-		for i := 0; ; i++ {
+		for i := 0; ; i++ { // cas with retry
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			err := kv.CompareAndSwap(ctx, body.Key, offset, offset+1, true)
@@ -138,6 +148,11 @@ func main() {
 			return err
 		}
 
+		// TODO idea 1: keep what I have but update local offsets if I was able to read an offset
+		// for a key > than what I have locally in my offsets. downside locking of local offsets but
+		// same as idea 2. upside no extra network call.
+		// TODO idea 2: read up to date offset for each key. downside one extra read per requested
+		// key. upside freshness
 		// TODO should I watch for "new" offsets and update my internal logsOffset map? if I happen
 		// to read a log with an offset higher than what I have in my map that is knowledge I can
 		// update almost for free; at the cost of a lock on the map. I could collect a
@@ -145,6 +160,7 @@ func main() {
 		// update the logsOffset
 
 		msgs := make(map[string][][2]int, len(body.Offsets))
+		update := make(map[string]int)
 		for key, offset := range body.Offsets {
 			offset = max(offset, 1)
 			// TODO read key+offset until key+offset+3 ? and len(log) replaced by
@@ -154,10 +170,10 @@ func main() {
 			// key
 
 			// server may return any number of contiguous messages; 4 is arbitrary
-			for i := range 4 {
+			for range 4 {
 				ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 				defer cancel()
-				msg, err := kv.ReadInt(ctx, logKey(key, i+offset))
+				msg, err := kv.ReadInt(ctx, logKey(key, offset))
 				if err != nil {
 					if maelstrom.ErrorCode(err) == maelstrom.KeyDoesNotExist {
 						break
@@ -166,9 +182,18 @@ func main() {
 					return err
 
 				}
-				msgs[key] = append(msgs[key], [2]int{i + offset, msg})
+				msgs[key] = append(msgs[key], [2]int{offset, msg})
+				update[key] = offset
+				offset++
 			}
 		}
+
+		// TODO add idea 1: can also do this after sending reply to not add to latency
+		muLogs.Lock()
+		for k, v := range update {
+			logsOffset[k] = max(logsOffset[k], v)
+		}
+		muLogs.Unlock()
 
 		return n.Reply(msg, map[string]any{
 			"type": "poll_ok",
