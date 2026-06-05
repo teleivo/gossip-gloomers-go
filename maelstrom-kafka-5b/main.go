@@ -14,15 +14,13 @@ import (
 // Challenge #5b: Multi-Node Kafka-Style Log
 // https://fly.io/dist-sys/5b/
 
-// TODO: what is responsible for
-// :cause "throw+: {:type :no-writer-of-value, :key \"9\", :value 20}",
-//
-//	                   :data {:type :no-writer-of-value,
-//	                          :key "9",
-//	                          :value 20}}},
-//	:valid? :unknown}
-//
-// Errors occurred during analysis, but no anomalies found. ಠ~ಠ
+// Idea for solution:
+// "send": store a per log offset under the log name in the kv store. Use CAS with retry
+// for a node/handler invocation to get exclusive access to that offset. Then write the message at
+// log name + "-" + offset.
+// "poll": read log messages using above log key pattern given users offset. Relying on the fact
+// that offsets are contiguous read up to 4 and stop on first that does not exist.
+
 func main() {
 	n := maelstrom.NewNode()
 	kv := maelstrom.NewLinKV(n)
@@ -109,8 +107,8 @@ func main() {
 			// offsets. So naive would be I read + 3 times until the first errors and tells me no
 			// key
 
-			// server may return any number of contiguous messages; 3 is arbitrary
-			for i := range 1 {
+			// server may return any number of contiguous messages; 4 is arbitrary
+			for i := range 4 {
 				ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 				defer cancel()
 				msg, err := kv.ReadInt(ctx, logKey(key, i+offset))
