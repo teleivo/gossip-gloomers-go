@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"log/slog"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -21,9 +23,51 @@ import (
 // "poll": read log messages using above log key pattern given users offset. Relying on the fact
 // that offsets are contiguous read up to 4 and stop on first that does not exist.
 
+// TODO towards 5c
+// current 5b stats
+// :availability {:valid? true, :ok-fraction 0.99967605},
+// :net {:all {:send-count 259310,
+//             :recv-count 259310,
+//             :msg-count 259310,
+//             :msgs-per-op 13.999352},
+//       :clients {:send-count 41028,
+//                 :recv-count 41028,
+//                 :msg-count 41028},
+//       :servers {:send-count 218282,
+//                 :recv-count 218282,
+//                 :msg-count 218282,
+//                 :msgs-per-op 11.784376},
+//       :valid? true},
+// :workload {:valid? true,
+//            :worst-realtime-lag {:time 30.745009388,
+//                                 :process 11,
+//                                 :key "9",
+//                                 :lag 30.66373773},
+//            :bad-error-types (),
+//            :error-types (),
+//            :info-txn-causes ()},
+// :valid? true}
+// get CAS failure count/rate
+// TODO is my realtime key lag going up linearly with the amount of keys? and does this mean keys as
+// in the log key? and what is the lag by thread?
+// think: can I get away with storing the logs in the seq-kv? and only offsets in lin-kv. offsets
+// need be be contiguous/monotonic at least for my poll. issue with using lin-kv is that a client
+// polling a node that lags behind forever would not see the logs unless that node talks to the
+// other node instead of the kv directly.
+// other idea: could each node be assigned an offset offset to reduce cas failure due to multiple
+// leaders competing for the same offset. So like a shard inside the log? but how to then merge this
+// into an overall monotonic append only log?
+
 func main() {
 	n := maelstrom.NewNode()
 	kv := maelstrom.NewLinKV(n)
+	level := slog.LevelDebug
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	n.Handle("init", func(msg maelstrom.Message) error {
+		logger = logger.With(slog.String("node", n.ID()))
+		return nil
+	})
 
 	// TODO rethink offsets as poll API is different than I thought. So if I get x I need to find x
 	// or the smallest offset after x
@@ -39,17 +83,19 @@ func main() {
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
+		reqLogger := logger.With(slog.String("op", "send"), slog.String("src", msg.Src), slog.String("key", body.Key), slog.Int("msg", body.Msg))
 
 		var offset int
 		muLogs.Lock()
 		// TODO rethink this: purpose is to not have to read offset at the start and reduce cas
 		// failures. Can I shrink the critical section?
 		offset = logsOffset[body.Key]
-		for {
+		for i := 0; ; i++ {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			err := kv.CompareAndSwap(ctx, body.Key, offset, offset+1, true)
 			if err == nil {
+				reqLogger.Debug("cas", "result", "ok", "attempt", i, "offset", offset)
 				offset++
 				break
 			}
@@ -57,6 +103,7 @@ func main() {
 				// TODO any error we should also retry on?
 				return err
 			}
+			reqLogger.Error("cas", "result", "precondition failed", "attempt", i, "offset", offset)
 			ctx, cancel = context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			offset, err = kv.ReadInt(ctx, body.Key)
@@ -68,13 +115,12 @@ func main() {
 		logsOffset[body.Key] = offset
 		muLogs.Unlock()
 
-		// TODO any sanitization or better parseablity I should use in key scheme?
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 		err := kv.Write(ctx, logKey(body.Key, offset), body.Msg)
 		if err != nil {
-			// TODO rollback offset? or ok as it is allowed to be sparse? or not due to my current
-			// poll implementation
+			// TODO rollback offset? I mean offsets are ok to be sparse but my current poll relies
+			// on contiguous offsets
 			return err
 		}
 
