@@ -14,9 +14,21 @@ import (
 // Challenge #5b: Multi-Node Kafka-Style Log
 // https://fly.io/dist-sys/5b/
 
+// TODO: what is responsible for
+// :cause "throw+: {:type :no-writer-of-value, :key \"9\", :value 20}",
+//
+//	                   :data {:type :no-writer-of-value,
+//	                          :key "9",
+//	                          :value 20}}},
+//	:valid? :unknown}
+//
+// Errors occurred during analysis, but no anomalies found. ಠ~ಠ
 func main() {
 	n := maelstrom.NewNode()
 	kv := maelstrom.NewLinKV(n)
+
+	// TODO rethink offsets as poll API is different than I thought. So if I get x I need to find x
+	// or the smallest offset after x
 
 	var muLogs sync.RWMutex
 	logsOffset := make(map[string]int)
@@ -30,9 +42,10 @@ func main() {
 			return err
 		}
 
-		// TODO zero offset is not used, should it?
 		var offset int
 		muLogs.Lock()
+		// TODO rethink this: purpose is to not have to read offset at the start and reduce cas
+		// failures. Can I shrink the critical section?
 		offset = logsOffset[body.Key]
 		for {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -58,9 +71,12 @@ func main() {
 		muLogs.Unlock()
 
 		// TODO any sanitization or better parseablity I should use in key scheme?
-		err := kv.Write(context.Background(), body.Key+strconv.Itoa(offset), body.Msg)
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		err := kv.Write(ctx, logKey(body.Key, offset), body.Msg)
 		if err != nil {
-			// TODO rollback offset?
+			// TODO rollback offset? or ok as it is allowed to be sparse? or not due to my current
+			// poll implementation
 			return err
 		}
 
@@ -83,8 +99,10 @@ func main() {
 		// update almost for free; at the cost of a lock on the map. I could collect a
 		// map[string]int of the max offsets I've seen and then after the reply/or in a goroutine
 		// update the logsOffset
+
 		msgs := make(map[string][][2]int, len(body.Offsets))
 		for key, offset := range body.Offsets {
+			offset = max(offset, 1)
 			// TODO read key+offset until key+offset+3 ? and len(log) replaced by
 			// logsOffset[body.Key] as the last known offset?
 			// but it could be that this node has no sends so it has not initialized its in memory
@@ -92,10 +110,10 @@ func main() {
 			// key
 
 			// server may return any number of contiguous messages; 3 is arbitrary
-			for i := range 3 {
+			for i := range 1 {
 				ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 				defer cancel()
-				msg, err := kv.ReadInt(ctx, key+strconv.Itoa(offset))
+				msg, err := kv.ReadInt(ctx, logKey(key, i+offset))
 				if err != nil {
 					if maelstrom.ErrorCode(err) == maelstrom.KeyDoesNotExist {
 						break
@@ -167,4 +185,8 @@ func main() {
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func logKey(key string, offset int) string {
+	return key + "-" + strconv.Itoa(offset)
 }
