@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/maphash"
 	"log"
 	"log/slog"
 	"os"
@@ -61,6 +62,9 @@ import (
 // leaders competing for the same offset. So like a shard inside the log? but how to then merge this
 // into an overall monotonic append only log?
 
+// idea 1: partition keys accross nodes to remove cas failures due to writes alternating between
+// nodes. nodes themselves currently serialize offset
+
 func main() {
 	n := maelstrom.NewNode()
 	kv := maelstrom.NewLinKV(n)
@@ -90,6 +94,32 @@ func main() {
 			slog.String("key", body.Key),
 			slog.Int("msg", body.Msg),
 		)
+		// TODO this is super slow!!! why?
+		s := shard(body.Key, n.NodeIDs())
+		if s != n.ID() {
+			var wg sync.WaitGroup // TODO better way to to this?
+			wg.Add(1)
+			reqLogger.Debug("forwarding to other shard", "shard", s)
+			err := n.RPC(s, msg.Body, func(msg maelstrom.Message) error {
+				defer wg.Done()
+				var body struct {
+					Offset int `json:"offset"`
+				}
+				if err := json.Unmarshal(msg.Body, &body); err != nil {
+					return err
+				}
+				// TODO no error handling needed here as rpc errors will be returned by n.RPC correct?
+				return n.Reply(msg, map[string]any{
+					"type":   "send_ok",
+					"offset": body.Offset,
+				})
+			})
+			wg.Wait()
+			if err != nil {
+				// todo
+				return err
+			}
+		}
 
 		muLogs.RLock()
 		offset, ok := logsOffset[body.Key]
@@ -147,6 +177,8 @@ func main() {
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
+		// TODO can we keep poll as is? since we use lin-kv every node will see writes by the other
+		// nodes in real time.
 
 		msgs := make(map[string][][2]int, len(body.Offsets))
 		update := make(map[string]int)
@@ -239,4 +271,10 @@ func main() {
 
 func logKey(key string, offset int) string {
 	return key + "-" + strconv.Itoa(offset)
+}
+
+func shard(key string, nodes []string) string {
+	var h maphash.Hash
+	h.WriteString(key)
+	return nodes[h.Sum64()%uint64(len(nodes))]
 }
