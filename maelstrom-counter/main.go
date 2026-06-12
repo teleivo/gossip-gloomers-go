@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"maps"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -35,10 +37,22 @@ func main() {
 			}
 			delta = 0
 		}
-		counters[n.ID()] += delta
+		counters[n.ID()] = delta
 
 		return nil
 	})
+
+	// :net {:all {:send-count 336450,
+	//            :recv-count 306669,
+	//            :msg-count 336450,
+	//            :msgs-per-op 22.945509},
+	//      :clients {:send-count 29526,
+	//                :recv-count 29526,
+	//                :msg-count 29526},
+	//      :servers {:send-count 306924,
+	//                :recv-count 277143,
+	//                :msg-count 306924,
+	//                :msgs-per-op 20.93187},
 
 	// seq-kv may serve past states indefinitely to other nodes: a node is allowed to observe any
 	// prefix of the total order, so another node's writes may never become visible via kv reads.
@@ -50,17 +64,24 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		for range ticker.C {
+			c := make(map[string]int)
 			mu.RLock()
+			maps.Copy(c, counters)
+			mu.RUnlock()
 			body := map[string]any{
 				"type":     "sync",
-				"counters": counters,
+				"counters": c,
 			}
-			mu.RUnlock()
 
-			for _, peer := range n.NodeIDs() {
-				if peer != n.ID() {
-					_ = n.Send(peer, body)
+			// gossip: forward new messages to 1 random peers (assumes --node-count 3)
+			// used 4 when running test with --nodes 100
+			for i := 0; i < 1; {
+				peer := n.NodeIDs()[rand.Intn(len(n.NodeIDs()))]
+				if peer == n.ID() {
+					continue
 				}
+				_ = n.Send(peer, body)
+				i++
 			}
 		}
 	}()
@@ -94,7 +115,7 @@ func main() {
 		mu.Lock()
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		err := kv.Write(ctx, n.ID(), counters[n.ID()])
+		err := kv.Write(ctx, n.ID(), counters[n.ID()]+body.Delta)
 		if err != nil {
 			mu.Unlock()
 			return err
